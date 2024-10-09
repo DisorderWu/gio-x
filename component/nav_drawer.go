@@ -34,6 +34,10 @@ type NavItem struct {
 	// left. A mixture of icon and non-icon items will be misaligned.
 	// Users should either set icons for all elements or none.
 	Icon *widget.Icon
+
+	// 添加右键选项区域  为空就代表没有右键菜单
+	ContextArea ContextArea
+	ContextMenu *MenuState
 }
 
 // renderNavItem holds both basic nav item state and the interaction
@@ -44,6 +48,8 @@ type renderNavItem struct {
 	selected bool
 	widget.Clickable
 	*AlphaPalette
+	// leftContextArea ContextArea // 测试右键
+	// balanceButton   widget.Clickable
 }
 
 func (n *renderNavItem) Clicked(gtx C) bool {
@@ -81,6 +87,36 @@ func (n *renderNavItem) Layout(gtx layout.Context, th *material.Theme) layout.Di
 		Right:  unit.Dp(8),
 	}.Layout(gtx, func(gtx C) D {
 		return material.Clickable(gtx, &n.Clickable, func(gtx C) D {
+			// leftMenu := MenuState{
+			// 	Options: []func(gtx layout.Context) layout.Dimensions{
+			// 		// func(gtx layout.Context) layout.Dimensions {
+			// 		// 	return layout.Inset{
+			// 		// 		Left:  unit.Dp(16),
+			// 		// 		Right: unit.Dp(16),
+			// 		// 	}.Layout(gtx, material.Body1(th, "Menus support arbitrary widgets.\nThis is just a label!\nHere's a loader:").Layout)
+			// 		// },
+			// 		func(gtx C) D {
+			// 			item := MenuItem(th, &n.balanceButton, "Balance")
+			// 			// item.Icon = icon.AccountBalanceIcon
+			// 			item.Hint = MenuHintText(th, "Hint")
+			// 			return item.Layout(gtx)
+			// 		},
+			// 	},
+			// }
+			if n.NavItem.ContextMenu != nil {
+				return layout.Stack{}.Layout(gtx,
+					layout.Expanded(func(gtx C) D { return n.layoutBackground(gtx, th) }),
+					layout.Stacked(func(gtx C) D { return n.layoutContent(gtx, th) }),
+					layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+						return n.NavItem.ContextArea.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							// 额外限制高度  条数 * 40
+							gtx.Constraints.Max.Y = gtx.Dp(unit.Dp(len(n.NavItem.ContextMenu.Options) * 40))
+							gtx.Constraints.Min = image.Point{}
+							return Menu(th, n.NavItem.ContextMenu).Layout(gtx)
+						})
+					}),
+				)
+			}
 			return layout.Stack{}.Layout(gtx,
 				layout.Expanded(func(gtx C) D { return n.layoutBackground(gtx, th) }),
 				layout.Stacked(func(gtx C) D { return n.layoutContent(gtx, th) }),
@@ -163,6 +199,10 @@ type NavDrawer struct {
 	items           []renderNavItem
 
 	navList layout.List
+
+	// 添加空白处的右键选项区域  为空就代表没有右键菜单
+	ContextArea_end ContextArea
+	ContextMenu_end *MenuState
 }
 
 // NewNav configures a navigation drawer
@@ -188,6 +228,44 @@ func (m *NavDrawer) AddNavItem(item NavItem) {
 	if len(m.items) == 1 {
 		m.items[0].selected = true
 	}
+}
+
+// 删除drawer的item
+func (m *NavDrawer) RemoveNavItem(tag interface{}) {
+	// oldLen := len(m.items)
+	for i, item := range m.items {
+		if item.NavItem.Tag == tag {
+			m.items = append(m.items[:i], m.items[i+1:]...)
+			// 如果是当前选中项 就需要调整当前选中项
+			if i == m.selectedItem {
+				if len(m.items) > 0 { // 如果还有item 就选前一项
+					if i == 0 { // 如果是第一项，就要选后一项
+						m.selectedItem = 0
+					} else {
+						m.selectedItem = i - 1
+					}
+					m.items[m.selectedItem].selected = true
+					m.selectedChanged = true
+				} else { // 当前选中的
+					m.selectedItem = 0 // 如果没有就不选
+					m.selectedChanged = false
+				}
+			} else if i < m.selectedItem {
+				// 如果大于当前选中项 就选后一项
+				m.selectedItem = m.selectedItem - 1
+				m.items[m.selectedItem].selected = true
+				m.selectedChanged = true
+			}
+			break
+		}
+	}
+}
+
+// 删除所有的item
+func (m *NavDrawer) RemoveAllNavItems() {
+	m.items = nil
+	m.selectedItem = 0
+	m.selectedChanged = false
 }
 
 func (m *NavDrawer) Layout(gtx layout.Context, th *material.Theme, anim *VisibilityAnimation) layout.Dimensions {
@@ -231,8 +309,29 @@ func (m *NavDrawer) LayoutContents(gtx layout.Context, th *material.Theme, anim 
 				)
 			})
 		}),
-		layout.Flexed(1, func(gtx C) D {
+		layout.Rigid(func(gtx C) D { // flex 1 修改为rigid
 			return m.layoutNavList(gtx, th, anim)
+		}),
+		// 这里添加背景按钮 测试右键
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if m.ContextMenu_end != nil {
+				return layout.Stack{}.Layout(gtx,
+					layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+						max := image.Pt(gtx.Constraints.Max.X, gtx.Constraints.Max.Y)
+						return layout.Dimensions{Size: max}
+					}),
+
+					layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+						return m.ContextArea_end.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							gtx.Constraints.Min = image.Point{}
+							return Menu(th, m.ContextMenu_end).Layout(gtx)
+						})
+					}),
+				)
+			}
+			return layout.Dimensions{}
+
+			// })
 		}),
 	)
 	return layout.Dimensions{Size: gtx.Constraints.Max}
@@ -245,11 +344,15 @@ func (m *NavDrawer) layoutNavList(gtx layout.Context, th *material.Theme, anim *
 	return m.navList.Layout(gtx, len(m.items), func(gtx C, index int) D {
 		gtx.Constraints.Max.Y = gtx.Dp(unit.Dp(48))
 		gtx.Constraints.Min = gtx.Constraints.Max
-		if m.items[index].Clicked(gtx) {
-			m.changeSelected(index)
+		// 用蠢方法解决一下试试呢？
+		if index < len(m.items) {
+			if m.items[index].Clicked(gtx) {
+				m.changeSelected(index)
+			}
+			dimensions := m.items[index].Layout(gtx, th)
+			return dimensions
 		}
-		dimensions := m.items[index].Layout(gtx, th)
-		return dimensions
+		return D{}
 	})
 }
 
@@ -259,6 +362,9 @@ func (m *NavDrawer) UnselectNavDestination() {
 }
 
 func (m *NavDrawer) changeSelected(newIndex int) {
+	// if len(m.items) < newIndex || len(m.items) < m.selectedItem {
+	// 	return
+	// }
 	if newIndex == m.selectedItem && m.items[m.selectedItem].selected {
 		return
 	}
